@@ -1,0 +1,47 @@
+repos:
+-   repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+    -   id: trailing-whitespace
+    -   id: end-of-file-fixer
+    -   id: check-added-large-files
+        args: ['--maxkb=1500']
+    -   id: check-toml
+    -   id: detect-private-key
+
+-   repo: https://github.com/psf/black
+    rev: 24.10.0
+    hooks:
+    -   id: black
+        args: [--safe, --quiet]
+
+-   repo: https://github.com/PyCQA/flake8
+    rev: 7.1.1
+    hooks:
+    -   id: flake8
+        additional_dependencies: [flake8-bugbear]
+        args: # arguments to configure flake8
+        # these are errors that will be ignored by flake8
+        # check out their meaning here
+        # https://pycodestyle.pycqa.org/en/latest/intro.html#error-codes
+        # https://flake8.pycqa.org/en/3.1.1/user/error-codes.html
+        # E266 - too many leading ‘#’ for block comment
+        # E501 - line too long (82 > 79 characters, we use black to autoformat)
+        # E203 whitespace before ':'
+        - "--ignore=E266,E501,W503,E203"
+        # __init__.py files usually contain unused imports
+        - "--per-file-ignores=__init__.py:F401"
+
+-   repo: https://github.com/pycqa/isort
+    rev: 5.13.2
+    hooks:
+    -   id: isort
+        name: isort (python)
+        args: ["--profile", "black", "--filter-files"]
+-   repo: local
+    hooks:
+    -   id: block-main-commits
+        name: block-main-commits
+        entry: bash -c 'if [ "$(git rev-parse --abbrev-ref HEAD)" = "main" ]; then echo "You cannot commit directly to the main branch."; exit 1; fi'
+        language: system
+        stages: [pre-commit]

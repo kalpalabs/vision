@@ -1,0 +1,15 @@
+[tool.poetry]
+name = "kalpa-vision"
+version = "0.1.0"
+description = "Repository for Vision Models"
+authors = ["Amrit Sahu <amrit.sahu@jiminihealth.com>"]
+readme = "proposal.md"
+
+[tool.poetry.dependencies]
+python = ">=3.11,<3.13"
+torch = "^2.6.0"
+tinygrad = "^0.10.1"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
