@@ -1,11 +1,11 @@
 
-# State-of-the-Art Vision Encoders for India and Global Applications
+# SOTA Vision Encoders for India and the world
 
 ## Background
 
 ### Encoders
 
-An encoder is a model that transforms input data (text, image, audio, or video) into a corresponding vector representation within a vector space. This vector is commonly referred to as an "embedding". Ideally, these embeddings are semantically meaningful; inputs that are related to each other should have embeddings that are closer in terms of a chosen distance metric, typically cosine similarity or Euclidean distance. For example, if a text encoder generates embeddings for "food," "restaurant," and "book," we would expect that *d*(food, restaurant) < *d*(food, book), where *d* represents the distance metric.
+An encoder is a model that transforms input data (text, image, audio, or video) into a corresponding vector representation within a vector space. This vector is commonly referred to as an "embedding". Ideally, these embeddings are semantically meaningful; inputs that are related to each other should have embeddings that are closer in terms of a chosen distance metric, typically cosine similarity or Euclidean distance. For example, if a text encoder generates embeddings for "food," "restaurant," and "book," we would expect that *d*("food", "restaurant") < *d*("food", "book"), where *d* represents the distance metric.
 
 Encoders are crucial components in modern multimodal Large Language Models (LLMs).  Most such LLMs utilize frozen, pre-trained encoders for each modality, feeding the resulting embeddings to the LLM.  In this context, vision encoders can be considered the "eyes" of an LLM, while audio encoders serve as its "ears". To be very clear, the LLM does not have direct access to the raw image data but only to their embeddings—a testament to the representational power of these embeddings. See a [survey of vision LLMs](https://www.artfintel.com/p/papers-ive-read-this-week-vision) for a broader overview of how vision LLMs use vision encoders.
 
