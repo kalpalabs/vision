@@ -19,3 +19,24 @@ Here is a humble view of the stack.
 Comparision with Human Brain - You are driving (see image -> brain encodes -> driving NN makes a decision -> Your decision kills a dog -> Error -> Trauma in the brain -> Rewiring the NN (brain) -> ... -> F1 Driver.)
 
 Cool. Hope you get the intro. Lets get a bit into the tech.
+
+## Setup
+
+Now lets set you up. Here are some installations you will need to do.
+
+* Download [Anaconda](https://www.anaconda.com/download) - This lets you create isolated environments, for dependencies of each project. This installs Python and Pip (Package Manager for Python) for you too.
+
+  * > python --version && pip --version
+* Lets do some basic installations.
+  * **pre-commit** - Runs before every commit to run some basic checks.
+  * **poetry** - Your package dependency manager.
+  * > pip install pre-commit poetry
+* create a virtual isolated environment. activate the venv and stay there
+  * > conda create -n kalpa-vision python=3.11
+  * > conda activate kalpa-vision
+* finally install dependencies from [./pyproject.toml](./pyproject.toml)
+  * > poetry install --no-root
+* check dependencies are installed
+  * >python
+  * > import torch
+  * > import tinygrad
