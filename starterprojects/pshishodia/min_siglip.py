@@ -29,6 +29,7 @@ class SiglipTextConfig:
     pad_token_id: int = 1
     bos_token_id: int = 49406
     eos_token_id: int = 49407
+    _attn_implementation: str = 'sdpa'
 
 @dataclass
 class SiglipVisionConfig:
