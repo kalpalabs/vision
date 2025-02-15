@@ -3,7 +3,7 @@ from typing import Optional, Tuple
 import torch
 import logging
 
-logger = logging.get_logger(__name__)
+# logger = logging.get_logger(__name__)
 
 
 class SiglipAttention(nn.Module):
@@ -194,10 +194,11 @@ class SiglipSdpaAttention(SiglipAttention):
     ) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
         if output_attentions:
             # TODO: Improve this warning with e.g. `model.config.attn_implementation = "manual"` once this is implemented.
-            logger.warning_once(
-                "SiglipModel is using SiglipSdpaAttention, but `torch.nn.functional.scaled_dot_product_attention` does not support `output_attentions=True`. Falling back to the manual attention implementation, "
-                'but specifying the manual implementation will be required from Transformers version v5.0.0 onwards. This warning can be removed using the argument `attn_implementation="eager"` when loading the model.'
-            )
+            # TODO(pshishodia): Fix logger. 
+            # logger.warning_once(
+            #     "SiglipModel is using SiglipSdpaAttention, but `torch.nn.functional.scaled_dot_product_attention` does not support `output_attentions=True`. Falling back to the manual attention implementation, "
+            #     'but specifying the manual implementation will be required from Transformers version v5.0.0 onwards. This warning can be removed using the argument `attn_implementation="eager"` when loading the model.'
+            # )
             return super().forward(
                 hidden_states=hidden_states,
                 attention_mask=attention_mask,

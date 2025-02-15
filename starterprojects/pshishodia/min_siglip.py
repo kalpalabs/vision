@@ -1,14 +1,15 @@
 from typing import Optional
 from torch import nn
 import torch
-from .siglip_attention import SiglipAttention, SiglipFlashAttention2, SiglipSdpaAttention
+from siglip_attention import SiglipAttention, SiglipSdpaAttention
 from transformers.activations import ACT2FN
 from transformers.modeling_attn_mask_utils import _prepare_4d_attention_mask
 
 
 SIGLIP_ATTENTION_CLASSES = {
     "eager": SiglipAttention,
-    "flash_attention_2": SiglipFlashAttention2,
+    # TODO(pshishodia): Add flash attention back. 
+    # "flash_attention_2": SiglipFlashAttention2,
     "sdpa": SiglipSdpaAttention,
 }
 
@@ -41,6 +42,7 @@ class SiglipVisionConfig:
     hidden_act: str = "gelu_pytorch_tanh"
     layer_norm_eps: float = 1e-6
     attention_dropout: float = 0.0
+    _attn_implementation: str = 'sdpa'
 
 
 @dataclass
@@ -125,13 +127,11 @@ class SiglipVisionModel(nn.Module):
     def __init__(self, config: SiglipVisionConfig):
         super().__init__()
         self.config = config
-        embed_dim = config.hidden_size
-
 
         # Get Embeddings. 
-        self.num_patches = (self.image_size // self.patch_size) ** 2
+        self.num_patches = (config.image_size // config.patch_size) ** 2
         self.num_positions = self.num_patches
-        self.position_embedding = nn.Embedding(self.num_positions, self.embed_dim)
+        self.position_embedding = nn.Embedding(self.num_patches, config.hidden_size)
         self.register_buffer("position_ids", torch.arange(self.num_positions).expand((1, -1)), persistent=False)
 
         self.patch_embedding = nn.Conv2d(
@@ -144,7 +144,7 @@ class SiglipVisionModel(nn.Module):
 
         self.layers = nn.ModuleList([SiglipEncoderLayer(config) for _ in range(config.num_hidden_layers)])
         
-        self.post_layernorm = nn.LayerNorm(embed_dim, eps=config.layer_norm_eps)
+        self.post_layernorm = nn.LayerNorm(config.hidden_size, eps=config.layer_norm_eps)
         self.use_head = True if not hasattr(config, "vision_use_head") else config.vision_use_head
         if self.use_head:
             self.head = SiglipMultiheadAttentionPoolingHead(config)
