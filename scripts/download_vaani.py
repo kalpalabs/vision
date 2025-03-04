@@ -25,6 +25,7 @@ from io import BytesIO
 from tqdm import tqdm
 import pandas as pd
 import time
+import re
 
 
 if not os.path.exists('/mnt/hf_cache'):
@@ -52,13 +53,6 @@ _DISTRICTS = ["AndhraPradesh_Anantpur", "AndhraPradesh_Chittoor", "AndhraPradesh
 # Hide progress bars to avoid clutter.
 datasets.disable_progress_bars()
 
-
-from datasets import load_dataset
-from datasets import Image
-from PIL import Image as PILImage
-from io import BytesIO
-from tqdm import tqdm
-
 def download_images():
     vaani_images = load_dataset("ARTPARK-IISc/VAANI", "images", num_proc=16, token=os.environ.get("HF_TOKEN"), cache_dir="/mnt/hf_cache")
     vaani_images = vaani_images.cast_column("image", Image(decode=False))
@@ -70,6 +64,24 @@ def download_images():
 
     with Pool(16) as p:
         list(tqdm(p.imap(save_image, vaani_images['train']['image']), total=len(vaani_images['train']['image'])))
+
+def clean_transcription(text):
+    # Remove text within curly braces { ... }
+    text = re.sub(r'\{.*?\}', '', text)
+    
+    # Remove text within angle brackets < ... >
+    text = re.sub(r'<.*?>', '', text)
+    
+    # remove text within closed brackets [ ... ]
+    text = re.sub(r'\[.*?\]', '', text)
+    
+    # Optionally, normalize extra whitespace
+    text = re.sub(r'\s+', ' ', text).strip()
+    
+    if text.endswith('--'):
+        text = text[:-2].strip()
+
+    return text
 
 # Some columns aren't present in some subsets. For example: 
 # 1. languagesKnown not present in all. Rajasthan_Nagaur
@@ -92,3 +104,15 @@ for district in tqdm(_DISTRICTS, desc = 'Districts'):
     
     pd.DataFrame(transcriptions).to_csv(output_file)
     os.system("rm -rf /mnt/hf_cache/hub/datasets--ARTPARK-IISc--VAANI/*")
+    
+    
+## Save to transcriptions.csv 
+dfs = []
+for f in os.listdir(_TRANSCRIPTIONS_OUTPUT_DIR):
+    df = pd.read_csv(os.path.join(_TRANSCRIPTIONS_OUTPUT_DIR, f))
+    df['district'] = f.split('.')[0]
+    dfs.append(df)
+    
+df = pd.concat(dfs, ignore_index=True)
+df['clean_transcript'] = df['transcript'].apply(clean_transcription)
+df.to_csv(os.path.join(_ROOT_DIR, 'transcriptions.csv'), index=False)
