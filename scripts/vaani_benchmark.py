@@ -119,4 +119,6 @@ for batch_inputs in tqdm(dataloader, desc="Create Image Embeddings"):
         batch_image_embeddings = model.get_image_features(**batch_inputs)
 
     image_embeddings_list.append(batch_image_embeddings.cpu())
-image_embeddings = torch
+
+image_embeddings = torch.cat(image_embeddings_list, dim=0)
+del image_embeddings_list
