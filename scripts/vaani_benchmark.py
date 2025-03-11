@@ -31,10 +31,10 @@ def read_captions():
     # but some are even more complex. For example "इस इमेज में मुझे एक बहोत बड़ा गार्डन दिख रहा है जिसका मिट्टी है जो" is exactly same 
     # for 4 queries with two different districts, but the same image. Anyway, we remove them all to reduce confusion.
     transcripts_df = transcripts_df.drop_duplicates(subset=['clean_transcript'], keep=False)
-    records = transcripts_df[['referenceImage', 'clean_transcript']].to_dict('records')
+    records = transcripts_df[['referenceImage', 'clean_transcript', 'language']].to_dict('records')
     
     del transcripts_df
-    return [r['clean_transcript'] for r in records], records # captions, records
+    return [r['clean_transcript'] for r in records], [r['language'] for r in records], records # captions, records
 
 def get_image_caption_mappings(image_filenames, records):
     filename_to_img_idx = {f:i for i, f in enumerate(image_filenames)}
@@ -67,7 +67,7 @@ def sanity_check_image_caption_mapping():
 
 
 image_filenames = os.listdir(_IMAGES_DIR)
-captions, records = read_captions()
+captions, languages, records = read_captions()
 caption_to_img_idx, image_to_caption_idxs = get_image_caption_mappings(image_filenames, records)
 
 sanity_check_image_caption_mapping()
@@ -122,3 +122,97 @@ for batch_inputs in tqdm(dataloader, desc="Create Image Embeddings"):
 
 image_embeddings = torch.cat(image_embeddings_list, dim=0)
 del image_embeddings_list
+
+
+class CaptionDataset(Dataset):
+    def __init__(self, captions):
+        self.captions = captions
+
+    def __len__(self):
+        return len(self.captions)
+
+    def __getitem__(self, idx):
+        return self.captions[idx]
+
+dataloader = DataLoader(
+    CaptionDataset(captions),
+    batch_size=32,
+    collate_fn=lambda batch: processor(text=batch, return_tensors="pt", padding="max_length", max_length=64, truncation=True),
+    shuffle=False,
+    num_workers=4,
+    pin_memory=True,         # Speeds up transfer to GPU
+    prefetch_factor=2        # num batches pre-fetched by each worker
+)
+
+caption_embeddings_list = []
+for batch_inputs in tqdm(dataloader, desc="Create Text Embeddings"):
+    batch_inputs = {k: v.to(model.device, non_blocking=True) for k, v in batch_inputs.items()}
+    
+    with torch.no_grad():
+        batch_text_embedding = model.get_text_features(**batch_inputs)
+
+    caption_embeddings_list.append(batch_text_embedding.cpu())
+
+caption_embeddings = torch.cat(caption_embeddings_list, dim=0)
+del caption_embeddings_list
+
+
+# Move embeddings to GPU
+image_embeddings = image_embeddings.to(device=model.device)
+caption_embeddings = caption_embeddings.to(model.device)
+
+# Normalize.
+image_embeddings = image_embeddings / image_embeddings.norm(dim=-1, keepdim=True)
+caption_embeddings = caption_embeddings / caption_embeddings.norm(dim=-1, keepdim=True)
+
+# Initialize lists to store top-32 indices
+topk_image_to_caption = []
+topk_caption_to_image = []
+TOPK = 1024
+
+# SIMILARITY_BATCH_SIZE=1024
+# Calculate topk caption indices for each image
+for i in tqdm(range(image_embeddings.size(0)), desc="Finding topk captions for each image"):
+    image_embedding = image_embeddings[i].unsqueeze(0)  # Shape: (1, 768)
+    similarities = torch.matmul(image_embedding, caption_embeddings.T)  # Shape: (1, 400K)
+    topk_indices = torch.topk(similarities, TOPK, dim=1).indices.squeeze(0)  # Shape: (k,)
+    topk_image_to_caption.append(topk_indices.cpu().numpy())
+
+# Calculate topk image indices for each caption
+for j in tqdm(range(caption_embeddings.size(0)), desc="Finding topk images for each caption"):
+    caption_embedding = caption_embeddings[j].unsqueeze(0)  # Shape: (1, 768)
+    similarities = torch.matmul(caption_embedding, image_embeddings.T)  # Shape: (1, 100K)
+    topk_indices = torch.topk(similarities, TOPK, dim=1).indices.squeeze(0)  # Shape: (k,)
+    topk_caption_to_image.append(topk_indices.cpu().numpy())
+
+def has_common(x, y):
+    small_set = x if len(x) < len(y) else y
+    big_set = y if len(x) < len(y) else x
+    for el in small_set:
+        if el in big_set:
+            return True
+    return False
+    
+
+# Calculate top-k accuracy for image to caption
+def get_image_to_caption_accuracies():
+    image_to_caption_accuracies = []
+    for k in tqdm([2**i for i in range(11)]):
+        ground_truth_present = len([1 for i, caption_preds in enumerate(topk_image_to_caption) if has_common(caption_preds[:k], image_to_caption_idxs[i])])
+        image_to_caption_accuracies.append(ground_truth_present / len(topk_caption_to_image) * 100)
+    return image_to_caption_accuracies
+
+
+x_axis = [2**i for i in range(11)]
+# Calculate top-k accuracy for caption to image
+def get_caption_to_image_accuracies(current_idxs):
+    caption_to_image_accuracies = []
+    for k in tqdm(x_axis):
+        ground_truth_present = len([1 for i in current_idxs if caption_to_img_idx[i] in topk_caption_to_image[i][:k]])
+        caption_to_image_accuracies.append(ground_truth_present / len(current_idxs) * 100)
+    return caption_to_image_accuracies
+
+for language in ['Hindi', 'Bengali', 'Telugu', 'Kannada', 'Marathi', 'Bhojpuri', 'Chhattisgarhi', 'Maithili']:
+    print(f"{language=}")
+    print(f"{x_axis=}")
+    print(f"T2IRetrievalAccuracies={get_caption_to_image_accuracies([i for i in range(len(languages)) if languages[i] == language])}")
