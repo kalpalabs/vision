@@ -26,9 +26,17 @@ from torchtune.training import DummyProfiler, PROFILER_KEY
 from torchtune.training.lr_schedulers import get_lr
 
 from tqdm import tqdm
+from imagenet_cosmos_di8x8_dataset import imagenet_cosmos_dataset
+from torchtune.modules import TiedLinear
 
 
 log = utils.get_logger("DEBUG")
+
+GPU_TYPE_TO_THEORITICAL_FP16_FLOPS = {
+    'A100' : 312e12,
+    'H100' : 989.5e12,
+    'H100-NVL' : 835.5,
+}
 
 
 class FullFinetuneRecipeSingleDevice(FTRecipeInterface):
@@ -191,7 +199,19 @@ class FullFinetuneRecipeSingleDevice(FTRecipeInterface):
         self.total_epochs = cfg.epochs
         self.max_steps_per_epoch = cfg.max_steps_per_epoch
         self.global_step = 0
-
+        
+        # mfu config. 
+        self._model_num_layers = None
+        self._model_hidden_dim = None
+        self._model_num_params = None
+        self._theoritical_flops = GPU_TYPE_TO_THEORITICAL_FP16_FLOPS[cfg.gpu_type]
+        
+    def get_mfu(self, tokens_per_second_per_gpu: float, seq_len: int):
+        N, D, L = self._model_num_layers, self._model_hidden_dim, seq_len
+        flops_per_token = 6 * self._model_num_params + 12 * N * D * L
+        mfu = tokens_per_second_per_gpu * flops_per_token / self._theoritical_flops * 100 # percentage
+        return mfu
+    
     def load_checkpoint(self, cfg_checkpointer: DictConfig) -> Dict[str, Any]:
         """
         Extract the checkpoint state from file and validate. If resume_from_checkpoint
@@ -312,6 +332,7 @@ class FullFinetuneRecipeSingleDevice(FTRecipeInterface):
                 if self._resume_from_checkpoint
                 else None
             ),
+            seed=cfg.seed,
         )
 
         # Finally update the recipe state which can only be correctly set after all of the
@@ -437,6 +458,15 @@ class FullFinetuneRecipeSingleDevice(FTRecipeInterface):
             )
 
         model.load_state_dict(model_state_dict)
+        
+        ##########################################
+        # Add image modality embeddings.         #
+        ##########################################
+        # TODO(pshishodia): Currently it completely removes the text embed layers (lm_head), 311/500M params. 
+        # keep the text embeddings as well to intermingle image and text. 
+        model.tok_embeddings = nn.Embedding(64_000, model.layers[0].mlp.w1.in_features).to(model.tok_embeddings.weight)
+        model.output = TiedLinear(model.tok_embeddings)
+        nn.init.normal_(model.tok_embeddings.weight, mean=0.0, std=0.02)
 
         # Validate model was loaded in with the expected dtype.
         training.validate_expected_param_dtype(
@@ -453,6 +483,11 @@ class FullFinetuneRecipeSingleDevice(FTRecipeInterface):
         if self._device.type != "cpu":
             memory_stats = training.get_memory_stats(device=self._device)
             training.log_memory_stats(memory_stats)
+            
+        ## Setup model constants. 
+        self._model_num_params = sum([p.numel() for p in model.parameters()])
+        self._model_num_layers = len(model.layers)
+        self._model_hidden_dim = model.layers[0].mlp.w1.in_features
 
         return model
 
@@ -554,22 +589,10 @@ class FullFinetuneRecipeSingleDevice(FTRecipeInterface):
         batch_size: int,
         collate_fn: str,
         dataloader_state_dict: Optional[Dict[str, Any]] = None,
+        seed: int=0,
     ) -> StatefulDataLoader:
-        """
-        All data related setup happens here. This recipe currently supports only
-        map-style datasets. If a state_dict is provided (meaning we are resuming a training run),
-        it is loaded into the dataloader.
-        """
-        if isinstance(cfg_dataset, ListConfig):
-            datasets = [
-                config.instantiate(single_cfg_dataset, self._tokenizer)
-                for single_cfg_dataset in cfg_dataset
-            ]
-            ds = ConcatDataset(datasets=datasets)
-            packed = getattr(ds, "packed", False)
-        else:
-            ds = config.instantiate(cfg_dataset, self._tokenizer)
-            packed = cfg_dataset.get("packed", False)
+
+        ds = imagenet_cosmos_dataset(**cfg_dataset)
 
         # Instantiate collate_fn
         if "left_pad_sequence" in collate_fn:
@@ -581,7 +604,7 @@ class FullFinetuneRecipeSingleDevice(FTRecipeInterface):
             num_replicas=1,
             rank=0,
             shuffle=shuffle,
-            seed=0,
+            seed=seed,
         )
         dataloader = StatefulDataLoader(
             dataset=ds,
@@ -593,7 +616,7 @@ class FullFinetuneRecipeSingleDevice(FTRecipeInterface):
                     padding_idx=self._tokenizer.pad_id,
                     ignore_idx=self._loss_fn.ignore_index,
                 )
-                if not packed
+                if not cfg_dataset.get('packed', False)
                 else padded_collate_packed
             ),
             # dropping last avoids shape issues with compile + flex attention
@@ -677,6 +700,7 @@ class FullFinetuneRecipeSingleDevice(FTRecipeInterface):
             pbar = tqdm(total=self._steps_per_epoch)
             self._dataloader.sampler.set_epoch(curr_epoch)
             for idx, batch in enumerate(self._dataloader):
+                B, L = batch['tokens'].shape
                 # Start tracking CUDA memory for active steps for just the first epoch
                 if (
                     curr_epoch == 0
@@ -738,6 +762,7 @@ class FullFinetuneRecipeSingleDevice(FTRecipeInterface):
                                 ),
                             ),
                             "tokens_per_second_per_gpu": num_tokens / time_per_step,
+                            'mfu' : self.get_mfu(num_tokens/time_per_step, L)
                         }
                         if self._device.type != "cpu" and self._log_peak_memory_stats:
                             log_dict.update(
