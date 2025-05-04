@@ -206,6 +206,8 @@ class FullFinetuneRecipeSingleDevice(FTRecipeInterface):
         self._model_num_params = None
         self._theoritical_flops = GPU_TYPE_TO_THEORITICAL_FP16_FLOPS[cfg.gpu_type]
         
+    ## TODO(pshishodia): mfu calculation seems to be wrong in case of packed dataset. I do see it's 
+    ## effect on total time required and #steps reduced, but mfu stays relatively constant. 
     def get_mfu(self, tokens_per_second_per_gpu: float, seq_len: int):
         N, D, L = self._model_num_layers, self._model_hidden_dim, seq_len
         flops_per_token = 6 * self._model_num_params + 12 * N * D * L
