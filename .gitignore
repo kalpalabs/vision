@@ -7,3 +7,4 @@ play.ipynb
 .venv/*
 data
 siglip.safetensors*
+*.env
