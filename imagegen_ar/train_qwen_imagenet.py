@@ -5,6 +5,7 @@
 # LICENSE file in the root directory of this source tree.
 
 import sys
+import os
 import time
 from functools import partial
 from typing import Any, Dict, Optional, Union
@@ -28,6 +29,14 @@ from torchtune.training.lr_schedulers import get_lr
 from tqdm import tqdm
 from imagenet_cosmos_di8x8_dataset import imagenet_cosmos_dataset
 from torchtune.modules import TiedLinear
+from torchvision.transforms import ToPILImage
+
+# import cosmos tokenizer. 
+sys.path.append(os.path.expanduser('~') + '/pshishodia/cosmos-predict1')
+from cosmos_predict1.tokenizer.inference.image_lib import ImageTokenizer
+from huggingface_hub import snapshot_download
+
+from torchtune.generation import generate
 
 
 log = utils.get_logger("DEBUG")
@@ -35,9 +44,39 @@ log = utils.get_logger("DEBUG")
 GPU_TYPE_TO_THEORITICAL_FP16_FLOPS = {
     'A100' : 312e12,
     'H100' : 989.5e12,
-    'H100-NVL' : 835.5,
+    'H100-NVL' : 835.5e12,
 }
 
+
+class CosmosTokenizer:
+    def __init__(self):
+        local_dir = "/tmp/Cosmos-0.1-Tokenizer-DI8x8"
+        os.makedirs(local_dir, exist_ok=True)
+        snapshot_download(repo_id="nvidia/Cosmos-0.1-Tokenizer-DI8x8", local_dir=local_dir)
+
+        self._cosmos_tokenizer = ImageTokenizer(
+            checkpoint_dec=f"{local_dir}/decoder.jit", # only use decoder. 
+            device="cuda",
+            dtype="bfloat16",
+        )
+        
+        # mark all weights as non-trainable. 
+        for param in self._cosmos_tokenizer.parameters():
+            param.requires_grad = False
+    
+    @torch.no_grad()      
+    def decode_tokens(self, tokens_bhw: torch.Tensor):
+        if tokens_bhw.ndim == 2:
+            tokens_bhw = tokens_bhw.unsqueeze(0)
+            
+        decoded_image_chw = self._cosmos_tokenizer.decode(tokens_bhw).squeeze(0)
+        decoded_image_chw = (decoded_image_chw + 1.0) / 2.0
+        decoded_image_chw_cpu = decoded_image_chw.to(torch.float).detach().cpu() # bf16 not supported for display
+        
+        # tensorboard accepts images as tensors rather than PIL images, so can skip.
+        # decoded_image_chw_cpu = ToPILImage()(decoded_image_chw_cpu)
+        
+        return decoded_image_chw_cpu
 
 class FullFinetuneRecipeSingleDevice(FTRecipeInterface):
     """
@@ -137,6 +176,7 @@ class FullFinetuneRecipeSingleDevice(FTRecipeInterface):
         # logging attributes
         self._output_dir = cfg.output_dir
         self._log_every_n_steps = cfg.get("log_every_n_steps", 1)
+        self._sample_every_n_steps = cfg.sample_every_n_steps
         self._log_peak_memory_stats = cfg.get("log_peak_memory_stats", False)
 
         if self._log_peak_memory_stats and self._device.type == "cpu":
@@ -206,6 +246,13 @@ class FullFinetuneRecipeSingleDevice(FTRecipeInterface):
         self._model_num_params = None
         self._theoritical_flops = GPU_TYPE_TO_THEORITICAL_FP16_FLOPS[cfg.gpu_type]
         
+        # cosmos related constants.
+        self._cosmos_tokenizer =  CosmosTokenizer()
+        self._cosmos_vocab = 64_000 + 64 # 64 extra dimensino to keep it divisible by 2^x.
+        self._cosmos_im_start = 64_000 + 64 - 2
+        self._cosmos_im_end = 64_000 + 64 - 1
+        self._cosmos_num_row_patch = 16
+        
     def get_mfu(self, tokens_per_second_per_gpu: float, seq_len: int):
         N, D, L = self._model_num_layers, self._model_hidden_dim, seq_len
         flops_per_token = 6 * self._model_num_params + 12 * N * D * L
@@ -267,6 +314,31 @@ class FullFinetuneRecipeSingleDevice(FTRecipeInterface):
                 "Are you sure you passed in the right recipe checkpoint?"
             ) from e
 
+    @torch.no_grad()
+    def sample(self):
+        # set model to eval mode. 
+        self._model.eval()
+        # TODO(phsishodia): raise bug: very sneaky bug - by default num_output_chunks=8. 
+        # which causes issues in generation since instead of a tensor a list of tensor is returned by unembed. 
+        # but forward call in generate_next_token expects a single tensor, rather than a list. 
+        num_output_chunks = self._model.num_output_chunks
+        self._model.num_output_chunks = 0
+        
+        rng = torch.Generator(device=self._device)
+        rng.manual_seed(42)
+        tokens_bl, _ = generate(
+            self._model,
+            prompt=torch.tensor([[self._cosmos_im_start]], dtype=torch.long, device=self._device),
+            max_generated_tokens=self._cosmos_num_row_patch * self._cosmos_num_row_patch,
+            temperature=1.0, rng=rng) # tokens, logprobs 
+        self._model.train()
+        
+        self._model.num_output_chunks = num_output_chunks
+        
+        tokens_bhw = tokens_bl[:,1:].view(-1, self._cosmos_num_row_patch, self._cosmos_num_row_patch)
+        img_tensor_chw_cpu = self._cosmos_tokenizer.decode_tokens(tokens_bhw)
+        return tokens_bhw.detach().cpu(), img_tensor_chw_cpu
+    
     def setup(self, cfg: DictConfig) -> None:
         """
         Sets up the recipe state correctly. This includes setting recipe attributes based
@@ -464,9 +536,15 @@ class FullFinetuneRecipeSingleDevice(FTRecipeInterface):
         ##########################################
         # TODO(pshishodia): Currently it completely removes the text embed layers (lm_head), 311/500M params. 
         # keep the text embeddings as well to intermingle image and text. 
-        model.tok_embeddings = nn.Embedding(64_000, model.layers[0].mlp.w1.in_features).to(model.tok_embeddings.weight)
-        model.output = TiedLinear(model.tok_embeddings)
+        model.tok_embeddings = nn.Embedding(self._cosmos_vocab, model.layers[0].mlp.w1.in_features).to(model.tok_embeddings.weight)
+        model.output = nn.Linear(model.layers[0].mlp.w1.in_features, self._cosmos_vocab, bias=False).to(model.tok_embeddings.weight)
         nn.init.normal_(model.tok_embeddings.weight, mean=0.0, std=0.02)
+
+        # Freeze all model parameters except embeddings
+        for param in model.parameters():
+            param.requires_grad = False
+        model.tok_embeddings.weight.requires_grad = True
+        model.output.weight.requires_grad = True
 
         # Validate model was loaded in with the expected dtype.
         training.validate_expected_param_dtype(
@@ -592,12 +670,12 @@ class FullFinetuneRecipeSingleDevice(FTRecipeInterface):
         seed: int=0,
     ) -> StatefulDataLoader:
 
-        ds = imagenet_cosmos_dataset(**cfg_dataset)
+        ds = imagenet_cosmos_dataset(**cfg_dataset, im_start=self._cosmos_im_start, im_end=self._cosmos_im_end)
 
         # Instantiate collate_fn
         if "left_pad_sequence" in collate_fn:
             raise RuntimeError("left_pad_sequence collator is only for inference.")
-        collate_fn = _get_component_from_path(collate_fn)
+        # collate_fn = _get_component_from_path(collate_fn)
 
         sampler = StatefulDistributedSampler(
             ds,
@@ -610,15 +688,18 @@ class FullFinetuneRecipeSingleDevice(FTRecipeInterface):
             dataset=ds,
             batch_size=batch_size,
             sampler=sampler,
-            collate_fn=(
-                partial(
-                    collate_fn,
-                    padding_idx=self._tokenizer.pad_id,
-                    ignore_idx=self._loss_fn.ignore_index,
-                )
-                if not cfg_dataset.get('packed', False)
-                else padded_collate_packed
-            ),
+            # TODO(pshishodia): FIX: This breaks a lot with padding, packing and probably something with default behvaiour as well.
+            collate_fn=lambda batch: {'tokens': torch.tensor([item['tokens'] for item in batch]),
+                                      'labels': torch.tensor([item['labels'] for item in batch])},
+            # collate_fn=(
+            #     partial(
+            #         collate_fn,
+            #         padding_idx=self._tokenizer.pad_id,
+            #         ignore_idx=self._loss_fn.ignore_index,
+            #     )
+            #     if not cfg_dataset.get('packed', False)
+            #     else padded_collate_packed
+            # ),
             # dropping last avoids shape issues with compile + flex attention
             drop_last=True,
         )
@@ -701,6 +782,7 @@ class FullFinetuneRecipeSingleDevice(FTRecipeInterface):
             self._dataloader.sampler.set_epoch(curr_epoch)
             for idx, batch in enumerate(self._dataloader):
                 B, L = batch['tokens'].shape
+
                 # Start tracking CUDA memory for active steps for just the first epoch
                 if (
                     curr_epoch == 0
@@ -770,6 +852,21 @@ class FullFinetuneRecipeSingleDevice(FTRecipeInterface):
                             )
                         if self._clip_grad_norm is not None:
                             log_dict.update({"grad_norm": grad_norm})
+                            
+                        if self.global_step % self._sample_every_n_steps == 0:
+                            tokens_bhw, img_tensor_chw_cpu = self.sample()
+                            # TODO(pshishodia): This doens't work even though tensorboard has writer.add_tensor whose documentation
+                            # suggests that it's same as doing writer.add_scalar, which is what log_dict does as well. 
+                            # log_dict.update({'Cosmos Tokens' : tokens_bhw})
+                            
+                            # TODO(pshishodia): Raise PR to add log_image to official torchtune in TensorBoardLogger,
+                            # using self._writer.add_image()
+                            self._metric_logger.log_image(
+                                'SampledImage',
+                                img_tensor_chw_cpu,
+                                step=self.global_step,
+                            )
+                        
                         self._metric_logger.log_dict(
                             log_dict,
                             step=self.global_step,
