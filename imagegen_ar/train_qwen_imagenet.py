@@ -30,6 +30,7 @@ from tqdm import tqdm
 from imagenet_cosmos_di8x8_dataset import imagenet_cosmos_dataset
 from torchtune.modules import TiedLinear
 from torchvision.transforms import ToPILImage
+from torch.utils.tensorboard import SummaryWriter
 
 # import cosmos tokenizer. 
 sys.path.append(os.path.expanduser('~') + '/pshishodia/cosmos-predict1')
@@ -358,6 +359,11 @@ class FullFinetuneRecipeSingleDevice(FTRecipeInterface):
         """
         self._metric_logger = config.instantiate(cfg.metric_logger)
 
+        if cfg.metric_logger.run_name:
+            run_log_dir = os.path.join(cfg.metric_logger.log_dir, f"{cfg.metric_logger.run_name}_{time.strftime('%Y%m%d_%H%M%S')}")
+            self._metric_logger.log_dir = run_log_dir
+            self._metric_logger._writer = SummaryWriter(log_dir=run_log_dir)
+            
         # log config with parameter override
         self._metric_logger.log_config(cfg)
 
@@ -438,7 +444,7 @@ class FullFinetuneRecipeSingleDevice(FTRecipeInterface):
 
         # Setup lr scheduler
         self._lr_scheduler = self._setup_lr_scheduler(
-            cfg_lr_scheduler=cfg.get("lr_scheduler", None),
+            cfg_lr_scheduler=cfg.lr_scheduler,
             num_training_steps=self.total_epochs * self._steps_per_epoch,
             last_epoch=self.global_step - 1,
         )
@@ -553,8 +559,8 @@ class FullFinetuneRecipeSingleDevice(FTRecipeInterface):
         nn.init.normal_(model.tok_embeddings.weight, mean=0.0, std=0.02)
 
         # Freeze all model parameters except embeddings
-        for param in model.parameters():
-            param.requires_grad = False
+        # for param in model.parameters():
+        #     param.requires_grad = False
         model.tok_embeddings.weight.requires_grad = True
         model.output.weight.requires_grad = True
 
