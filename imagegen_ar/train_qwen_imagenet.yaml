@@ -46,17 +46,23 @@ seed: 0
 shuffle: True
 
 # Fine-tuning arguments
-epochs: 1
+epochs: 4
 max_steps_per_epoch: null
-batch_size: 224
+batch_size: 144
 gradient_accumulation_steps: 1  # Use to increase effective batch size
 optimizer:
   _component_: torch.optim.AdamW
   fused: True
-  lr: 1e-3
+  lr: 1e-4
 optimizer_in_bwd: False  # True saves memory. Requires gradient_accumulation_steps=1
 loss:
   _component_: torchtune.modules.loss.CEWithChunkedOutputLoss
+
+
+lr_scheduler:
+  _component_: torchtune.training.lr_schedulers.get_cosine_schedule_with_warmup
+  num_warmup_steps: 500
+
 
 # Training env
 device: cuda
@@ -72,8 +78,11 @@ compile: False  # torch.compile the model + loss, True increases speed + decreas
 metric_logger:
   _component_: torchtune.training.metric_logging.TensorBoardLogger
   log_dir: ${output_dir}/logs
+  # TODO(pshishodia): It doesn't work when I set it in cli as:
+  # tune run train_qwen_imagenet.py --config train_qwen_imagenet.yaml metric_logger.run_name=full_train_4_epoch
+  run_name: full_train_4_epoch
 log_every_n_steps: 5
-sample_every_n_steps: 50
+sample_every_n_steps: 100
 log_peak_memory_stats: True
 
 # Profiler (disabled)
@@ -89,14 +98,14 @@ profiler:
   cuda: True
 
   #trace options passed to `torch.profiler.profile`
-  profile_memory: False
-  with_stack: False
+  profile_memory: True
+  with_stack: True
   record_shapes: True
-  with_flops: False
+  with_flops: True
 
   # `torch.profiler.schedule` options:
   # wait_steps -> wait, warmup_steps -> warmup, active_steps -> active, num_cycles -> repeat
   wait_steps: 5
-  warmup_steps: 3
-  active_steps: 2
+  warmup_steps: 5
+  active_steps: 10
   num_cycles: 1
