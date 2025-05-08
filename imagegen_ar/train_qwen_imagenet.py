@@ -37,7 +37,7 @@ from cosmos_predict1.tokenizer.inference.image_lib import ImageTokenizer
 from huggingface_hub import snapshot_download
 
 from torchtune.generation import generate
-from torchtune.training import MetricLoggerInterface
+from torchtune.training.metric_logging import MetricLoggerInterface
 
 
 log = utils.get_logger("DEBUG")
