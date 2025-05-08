@@ -37,6 +37,7 @@ from cosmos_predict1.tokenizer.inference.image_lib import ImageTokenizer
 from huggingface_hub import snapshot_download
 
 from torchtune.generation import generate
+from torchtune.training import MetricLoggerInterface
 
 
 log = utils.get_logger("DEBUG")
@@ -46,6 +47,15 @@ GPU_TYPE_TO_THEORITICAL_FP16_FLOPS = {
     'H100' : 989.5e12,
     'H100-NVL' : 835.5e12,
 }
+
+# TODO(pshishodia): Raise PR to add log_image to official torchtune in TensorBoardLogger,
+# using self._writer.add_image()
+def log_image(metric_logger: MetricLoggerInterface, name: str, img: torch.Tensor, step: int) -> None:
+    metric_logger._writer.add_image(
+        name,
+        img,
+        global_step=step,
+    )
 
 
 class CosmosTokenizer:
@@ -861,9 +871,9 @@ class FullFinetuneRecipeSingleDevice(FTRecipeInterface):
                             # suggests that it's same as doing writer.add_scalar, which is what log_dict does as well. 
                             # log_dict.update({'Cosmos Tokens' : tokens_bhw})
                             
-                            # TODO(pshishodia): Raise PR to add log_image to official torchtune in TensorBoardLogger,
-                            # using self._writer.add_image()
-                            self._metric_logger.log_image(
+
+                            log_image(
+                                self._metric_logger,
                                 'SampledImage',
                                 img_tensor_chw_cpu,
                                 step=self.global_step,
